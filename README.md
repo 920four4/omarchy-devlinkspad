@@ -45,7 +45,7 @@ omarchy-shell shell summon 920four.devlinkspad '{"q":"apple team id"}'
 - `Enter` opens the URL with `xdg-open`
 - `Escape` clears the query, then closes
 - Click the dimmed scrim to dismiss
-- 20 free jumps, then **Unlimited use · $5/yr** opens [devlinkspad.com](https://devlinkspad.com) in your browser. Pro unlocks unlimited use on this computer. Payment is not collected inside the plugin.
+- 20 free jumps. Click **Sign in for unlimited** to open [devlinkspad.com](https://devlinkspad.com) in your browser. If you already have Pro, sign in and this computer unlocks. If not, Pro is $5/year — payment is never collected inside the plugin.
 
 ## Remove
 

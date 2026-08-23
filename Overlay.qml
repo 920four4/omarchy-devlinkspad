@@ -285,7 +285,8 @@ Item {
   readonly property string footerCtaLabel: {
     if (root.connecting) return "Waiting for sign-in…"
     if (root.isPro) return "Pro · unlimited"
-    return "Unlimited use · $5/yr"
+    if (root.licenseToken) return "Upgrade · $5/yr"
+    return "Sign in for unlimited"
   }
 
   ListModel { id: displayModel }
@@ -488,9 +489,11 @@ Item {
             anchors.rightMargin: Style.space(12)
             text: root.connecting
                   ? "Waiting for sign-in in your browser…"
-                  : (root.canJump
-                    ? "Unlimited use · $5/yr"
-                    : "Free jumps used · Unlimited use · $5/yr")
+                  : (root.licenseToken && !root.isPro
+                    ? "This account isn’t Pro yet · Unlimited use · $5/yr"
+                    : (root.canJump
+                      ? "Already paid? Sign in to enable unlimited on this computer"
+                      : "Sign in to keep jumping · Pro $5/yr"))
             color: root.selectedText
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
