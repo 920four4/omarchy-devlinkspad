@@ -34,7 +34,8 @@ Item {
   readonly property bool canJump: root.isPro || root.opens < root.freeOpens
   readonly property int remainingOpens: Math.max(0, root.freeOpens - root.opens)
   readonly property int ctaHeight: root.isPro ? 0 : Math.max(Style.space(28), Style.font.caption + Style.spacing.controlPaddingY * 2)
-  readonly property string statePath: Quickshell.env("HOME") + "/.local/state/omarchy/devlinkspad.json"
+  readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy"
+  readonly property string statePath: root.stateDir + "/devlinkspad.json"
   readonly property int httpMaxBytes: License.maxHttpBytes()
   readonly property int stateMaxBytes: License.maxStateBytes()
   readonly property int catalogMaxBytes: License.maxCatalogBytes()
@@ -71,7 +72,7 @@ Item {
     try {
       var payload = JSON.parse(payloadJson || "{}")
       if (payload && payload.q)
-        q = String(payload.q)
+        q = Search.plain(payload.q, 128)
     } catch (e) {}
 
     root.opened = true
@@ -108,11 +109,11 @@ Item {
     displayModel.clear()
     for (var i = 0; i < rows.length; i++) {
       displayModel.append({
-        title: String(rows[i].title || ""),
-        subtitle: String(rows[i].subtitle || ""),
-        href: String(rows[i].url || ""),
-        serviceName: String(rows[i].serviceName || ""),
-        label: String(rows[i].label || "")
+        title: Search.plain(rows[i].title, 120),
+        subtitle: Search.plain(rows[i].subtitle, 256),
+        href: Search.plain(rows[i].url, 256),
+        serviceName: Search.plain(rows[i].serviceName, 80),
+        label: Search.plain(rows[i].label, 80)
       })
     }
 
@@ -128,10 +129,20 @@ Item {
   }
 
   function setFilter(nextFilter) {
-    root.filterText = nextFilter
+    root.filterText = Search.plain(nextFilter, 128)
     root.selectedIndex = 0
     root.cursorActive = true
     root.rebuildDisplay()
+  }
+
+  function lockStatePerms() {
+    lockPermsProc.exec([
+      "sh", "-c",
+      "mkdir -p -m 700 -- \"$1\" && chmod 700 -- \"$1\" && if [ -e \"$2\" ]; then chmod 600 -- \"$2\"; fi",
+      "devlinkspad-perms",
+      root.stateDir,
+      root.statePath
+    ])
   }
 
   function select(delta) {
@@ -325,6 +336,7 @@ Item {
     atomicWrites: true
     printErrors: false
     onFileChanged: root.rereadState()
+    onSaved: root.lockStatePerms()
   }
 
   Process {
@@ -360,8 +372,7 @@ Item {
   }
 
   Process {
-    id: mkdirProc
-    command: ["mkdir", "-p", Quickshell.env("HOME") + "/.local/state/omarchy"]
+    id: lockPermsProc
   }
 
   Process {
@@ -431,7 +442,7 @@ Item {
   }
 
   Component.onCompleted: {
-    mkdirProc.running = true
+    root.lockStatePerms()
     root.rereadCatalog()
     root.rereadState()
   }
@@ -530,6 +541,7 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: root.filterText || "Search dashboards… stripe webhook, apple team id, vercel tokens"
+            textFormat: Text.PlainText
             color: root.foreground
             opacity: root.filterText ? 1 : 0.58
             font.family: root.fontFamily
@@ -556,6 +568,7 @@ Item {
                     : (root.canJump
                       ? "Already paid? Sign in to enable unlimited on this computer"
                       : "Sign in to keep jumping · Pro $5/yr"))
+            textFormat: Text.PlainText
             color: root.selectedText
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -610,6 +623,7 @@ Item {
                 Text {
                   width: parent.width
                   text: row.title
+                  textFormat: Text.PlainText
                   color: row.hasCursor ? root.selectedText : root.foreground
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.title
@@ -619,6 +633,7 @@ Item {
                 Text {
                   width: parent.width
                   text: row.subtitle
+                  textFormat: Text.PlainText
                   color: row.hasCursor ? root.selectedText : root.foreground
                   opacity: 0.62
                   font.family: root.fontFamily
@@ -651,6 +666,7 @@ Item {
 
             Text {
               text: "⌘"
+              textFormat: Text.PlainText
               color: root.selectedText
               opacity: 0.8
               font.family: root.fontFamily
@@ -663,6 +679,7 @@ Item {
               text: root.services.length === 0
                 ? "Catalog missing — check data/services.json"
                 : "No matches for “" + root.filterText + "”"
+              textFormat: Text.PlainText
               color: root.foreground
               opacity: 0.7
               font.family: root.fontFamily
@@ -687,6 +704,7 @@ Item {
                   + (root.isPro || root.remainingOpens <= 0
                     ? ""
                     : " · " + root.remainingOpens + " left")
+            textFormat: Text.PlainText
             color: root.foreground
             opacity: 0.5
             font.family: root.fontFamily
@@ -699,6 +717,7 @@ Item {
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: root.footerCtaLabel
+            textFormat: Text.PlainText
             color: root.isPro ? root.foreground : root.selectedText
             opacity: root.isPro ? 0.5 : 0.9
             font.family: root.fontFamily

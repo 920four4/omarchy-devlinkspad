@@ -1,23 +1,86 @@
 .pragma library
 
+var MAX_SERVICES = 256
+var MAX_LINKS = 32
+var MAX_TAGS = 24
+var MAX_QUERY = 128
+var MAX_TOKENS = 8
+var MAX_FIELD = 256
+var MAX_HITS = 200
+
+function maxServices() { return MAX_SERVICES }
+function maxLinks() { return MAX_LINKS }
+
+function asArray(v) {
+  return Array.isArray(v) ? v : []
+}
+
+function plain(s, max) {
+  max = max || MAX_FIELD
+  s = String(s || "")
+  var out = ""
+  for (var i = 0; i < s.length && out.length < max; i++) {
+    var c = s.charCodeAt(i)
+    if (c < 32 || c === 127) continue
+    if (c >= 0x202A && c <= 0x202E) continue
+    if (c >= 0x2066 && c <= 0x2069) continue
+    out += s.charAt(i)
+  }
+  return out
+}
+
 function parseCatalog(raw) {
   try {
     var data = JSON.parse(String(raw || "[]"))
-    return Array.isArray(data) ? data : []
+    if (!Array.isArray(data)) return []
+    var out = []
+    var n = Math.min(data.length, MAX_SERVICES)
+    for (var i = 0; i < n; i++) {
+      var s = data[i]
+      if (!s || typeof s !== "object") continue
+      var linksIn = asArray(s.links)
+      var links = []
+      var ln = Math.min(linksIn.length, MAX_LINKS)
+      for (var li = 0; li < ln; li++) {
+        var link = linksIn[li]
+        if (!link || typeof link !== "object") continue
+        links.push({
+          label: plain(link.label, 80),
+          url: plain(link.url, MAX_FIELD),
+          category: plain(link.category, 32)
+        })
+      }
+      var tagsIn = asArray(s.tags)
+      var tags = []
+      var tn = Math.min(tagsIn.length, MAX_TAGS)
+      for (var ti = 0; ti < tn; ti++)
+        tags.push(plain(tagsIn[ti], 32))
+      out.push({
+        name: plain(s.name, 80),
+        domain: plain(s.domain, 80),
+        slug: plain(s.slug, 80),
+        tags: tags,
+        links: links
+      })
+    }
+    return out
   } catch (e) {
     return []
   }
 }
 
 function primaryLink(service) {
-  if (!service || !service.links || !service.links.length) return null
-  for (var i = 0; i < service.links.length; i++) {
-    if (service.links[i].category === "api_keys") return service.links[i]
+  var links = asArray(service && service.links)
+  var n = Math.min(links.length, MAX_LINKS)
+  if (n === 0) return null
+  var i
+  for (i = 0; i < n; i++) {
+    if (links[i] && links[i].category === "api_keys") return links[i]
   }
-  for (var j = 0; j < service.links.length; j++) {
-    if (service.links[j].category === "dashboard") return service.links[j]
+  for (i = 0; i < n; i++) {
+    if (links[i] && links[i].category === "dashboard") return links[i]
   }
-  return service.links[0]
+  return links[0]
 }
 
 function intentBoost(token, label, cat) {
@@ -33,37 +96,39 @@ function intentBoost(token, label, cat) {
 }
 
 function searchCatalog(services, rawQuery, limit) {
-  limit = limit || 40
-  var q = (rawQuery || "").trim().toLowerCase()
+  limit = Math.min(limit || 40, 40)
+  services = asArray(services)
+  var q = plain(rawQuery, MAX_QUERY).trim().toLowerCase()
   var out = []
   var i
+  var serviceCount = Math.min(services.length, MAX_SERVICES)
 
   if (!q) {
-    var n = Math.min(12, services.length)
+    var n = Math.min(12, serviceCount)
     for (i = 0; i < n; i++) {
       var s0 = services[i]
       var link0 = primaryLink(s0)
       out.push({
-        title: s0.name + " · " + (link0 ? link0.label : "Open"),
-        subtitle: link0 ? link0.url : s0.domain,
-        url: link0 ? link0.url : ("https://" + s0.domain),
-        serviceName: s0.name,
+        title: (s0.name || "") + " · " + (link0 ? link0.label : "Open"),
+        subtitle: link0 ? link0.url : (s0.domain || ""),
+        url: link0 ? link0.url : (s0.domain ? ("https://" + s0.domain) : ""),
+        serviceName: s0.name || "",
         label: link0 ? link0.label : "Open"
       })
     }
     return out
   }
 
-  var tokens = q.split(/\s+/).filter(function (t) { return t.length > 0 })
+  var tokens = q.split(/\s+/).filter(function (t) { return t.length > 0 }).slice(0, MAX_TOKENS)
   var hits = []
 
-  for (i = 0; i < services.length; i++) {
+  for (i = 0; i < serviceCount; i++) {
     var s = services[i]
     var name = (s.name || "").toLowerCase()
     var domain = (s.domain || "").toLowerCase()
-    var tags = ((s.tags || []).join(" ")).toLowerCase()
+    var tags = asArray(s.tags).slice(0, MAX_TAGS)
     var slug = (s.slug || "").toLowerCase()
-    var hayService = name + " " + domain + " " + tags + " " + slug
+    var hayService = name + " " + domain + " " + tags.join(" ") + " " + slug
 
     var serviceScore = 0
     if (name === q || slug === q) serviceScore += 100
@@ -76,9 +141,11 @@ function searchCatalog(services, rawQuery, limit) {
     }
     if (allInService) serviceScore += 20
 
-    var links = s.links || []
-    for (var li = 0; li < links.length; li++) {
+    var links = asArray(s.links)
+    var linkCount = Math.min(links.length, MAX_LINKS)
+    for (var li = 0; li < linkCount; li++) {
       var link = links[li]
+      if (!link || typeof link !== "object") continue
       var label = (link.label || "").toLowerCase()
       var cat = (link.category || "").toLowerCase()
       var hay = hayService + " " + label + " " + cat
@@ -101,13 +168,15 @@ function searchCatalog(services, rawQuery, limit) {
       if (score <= 0) continue
       hits.push({
         score: score,
-        title: s.name + " · " + link.label,
-        subtitle: link.url,
-        url: link.url,
-        serviceName: s.name,
-        label: link.label
+        title: (s.name || "") + " · " + (link.label || ""),
+        subtitle: link.url || "",
+        url: link.url || "",
+        serviceName: s.name || "",
+        label: link.label || ""
       })
+      if (hits.length >= MAX_HITS) break
     }
+    if (hits.length >= MAX_HITS) break
   }
 
   hits.sort(function (a, b) {

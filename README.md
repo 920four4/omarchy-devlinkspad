@@ -53,7 +53,7 @@ omarchy-shell shell summon 920four.devlinkspad '{"q":"apple team id"}'
 omarchy plugin remove 920four.devlinkspad
 ```
 
-That disables the plugin and deletes the git checkout. It does not edit Hyprland binds or touch other Omarchy config. Optional leftover: `~/.local/state/omarchy/devlinkspad.json` (device pairing + free-jump count). Delete that file if you want a clean slate.
+That disables the plugin and deletes the git checkout. It does not edit Hyprland binds or touch other Omarchy config. Optional leftover: `~/.local/state/omarchy/devlinkspad.json` (device pairing + free-jump count, directory mode `700` / file mode `600`). Delete that file if you want a clean slate.
 
 If you added the Super+Shift+L bind yourself, remove it from `~/.config/hypr/bindings.lua`.
 
