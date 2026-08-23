@@ -64,10 +64,10 @@ No sudo, no install hooks, no extra packages.
 | Dependency | Why |
 | --- | --- |
 | `xdg-open` | Open dashboard URLs and the sign-in page in your default browser |
-| `curl` | Optional Pro license check against `https://devlinkspad.com` |
+| `curl` | Optional Pro license check against `https://devlinkspad.com`. The bearer token is passed through curl’s stdin config (`-K -`), not process argv. Responses are capped at 8 KiB. |
 | `openssl` | Random device id for pairing (falls back if missing) |
 
-The catalog ships in `data/services.json`. Network is used only for Pro pairing / license refresh, not for search.
+The catalog ships in `data/services.json`. Network is used only for Pro pairing / license refresh, not for search. License HTTP bodies are capped at 8 KiB; the persisted state file and catalog are read with `head -c` so a replaced file cannot grow the keep-loaded overlay without a byte ceiling.
 
 ## Files
 

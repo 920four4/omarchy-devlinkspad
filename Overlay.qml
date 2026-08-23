@@ -35,6 +35,10 @@ Item {
   readonly property int remainingOpens: Math.max(0, root.freeOpens - root.opens)
   readonly property int ctaHeight: root.isPro ? 0 : Math.max(Style.space(28), Style.font.caption + Style.spacing.controlPaddingY * 2)
   readonly property string statePath: Quickshell.env("HOME") + "/.local/state/omarchy/devlinkspad.json"
+  readonly property int httpMaxBytes: License.maxHttpBytes()
+  readonly property int stateMaxBytes: License.maxStateBytes()
+  readonly property int catalogMaxBytes: License.maxCatalogBytes()
+  property string httpConfig: ""
 
   property color background: Color.menu.background
   property color foreground: Color.menu.text
@@ -169,9 +173,9 @@ Item {
   }
 
   function applyState(s) {
-    root.deviceId = s.deviceId || ""
-    root.licenseToken = s.token || ""
-    root.licenseEmail = s.email || ""
+    root.deviceId = License.clip(s.deviceId, 64)
+    root.licenseToken = License.clip(s.token, 4096)
+    root.licenseEmail = License.clip(s.email, 254)
     root.isPro = s.isPro === true
     root.opens = s.opens || 0
     root.checkedAt = s.checkedAt || 0
@@ -227,17 +231,31 @@ Item {
 
   function httpJson(action, method, url, body, token) {
     if (httpProc.running) return
+    var cfg = License.buildCurlConfig(method, url, body, token, root.httpMaxBytes)
+    if (!cfg) return
     root.httpAction = action
-    var cmd = ["curl", "-sS", "-m", "8", "-X", method, "-H", "Accept: application/json"]
-    if (token)
-      cmd.push("-H", "Authorization: Bearer " + token)
-    if (method === "POST") {
-      cmd.push("-H", "Content-Type: application/json")
-      cmd.push("-d", body || "{}")
-    }
-    cmd.push(url)
-    httpProc.command = cmd
-    httpProc.running = true
+    root.httpConfig = cfg
+    httpProc.stdinEnabled = true
+    // Token lives in curl's stdin config, never in argv /proc/pid/cmdline.
+    // head -c is the byte ceiling so StdioCollector cannot grow unbounded.
+    httpProc.exec([
+      "sh", "-c",
+      "curl --proto =https --proto-redir =https -K - --max-filesize \"$1\" | head -c \"$1\"",
+      "devlinkspad-http",
+      String(root.httpMaxBytes)
+    ])
+  }
+
+  function loadCappedText(raw, maxBytes) {
+    return License.withinByteCeiling(raw, maxBytes) ? String(raw || "") : ""
+  }
+
+  function rereadCatalog() {
+    catalogReadProc.exec(["timeout", "5", "head", "-c", String(root.catalogMaxBytes + 1), "--", root.catalogPath])
+  }
+
+  function rereadState() {
+    stateReadProc.exec(["timeout", "5", "head", "-c", String(root.stateMaxBytes + 1), "--", root.statePath])
   }
 
   function handleHttp(raw) {
@@ -263,9 +281,9 @@ Item {
 
     if (action === "poll") {
       if (data.status !== "claimed") return
-      if (data.token) root.licenseToken = String(data.token)
+      if (data.token) root.licenseToken = License.clip(String(data.token), 4096)
       root.isPro = data.isPro === true
-      if (data.email) root.licenseEmail = String(data.email)
+      if (data.email) root.licenseEmail = License.clip(String(data.email), 254)
       root.checkedAt = Date.now()
       root.connecting = false
       pollTimer.stop()
@@ -276,7 +294,7 @@ Item {
 
     if (action === "license") {
       root.isPro = data.isPro === true
-      if (data.email) root.licenseEmail = String(data.email)
+      if (data.email) root.licenseEmail = License.clip(String(data.email), 254)
       root.checkedAt = Date.now()
       root.saveState()
     }
@@ -293,26 +311,52 @@ Item {
 
   FileView {
     path: root.catalogPath
-    preload: true
+    preload: false
     watchChanges: true
-    onLoaded: root.loadCatalog(text())
-    onLoadFailed: function(error) {
-      console.warn("devlinkspad: catalog load failed:", error, "path=" + root.catalogPath)
-      root.loadCatalog("[]")
-    }
-    onFileChanged: reload()
+    printErrors: false
+    onFileChanged: root.rereadCatalog()
   }
 
   FileView {
     id: stateFile
     path: root.statePath
-    preload: true
+    preload: false
     watchChanges: true
     atomicWrites: true
     printErrors: false
-    onLoaded: root.applyState(License.parseState(text()))
-    onLoadFailed: root.applyState(License.emptyState())
-    onFileChanged: reload()
+    onFileChanged: root.rereadState()
+  }
+
+  Process {
+    id: catalogReadProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var raw = String(text)
+        if (!raw || !License.withinByteCeiling(raw, root.catalogMaxBytes)) {
+          console.warn("devlinkspad: catalog read failed or exceeds byte ceiling, path=" + root.catalogPath)
+          if (root.services.length === 0)
+            root.loadCatalog("[]")
+          return
+        }
+        root.loadCatalog(raw)
+      }
+    }
+  }
+
+  Process {
+    id: stateReadProc
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        var raw = String(text)
+        if (!License.withinByteCeiling(raw, root.stateMaxBytes)) {
+          console.warn("devlinkspad: state file exceeds byte ceiling")
+          return
+        }
+        root.applyState(License.parseState(raw))
+      }
+    }
   }
 
   Process {
@@ -349,9 +393,23 @@ Item {
 
   Process {
     id: httpProc
+    stdinEnabled: true
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.handleHttp(text)
+      onStreamFinished: {
+        var raw = root.loadCappedText(text, root.httpMaxBytes)
+        root.handleHttp(raw)
+      }
+    }
+    onStarted: {
+      write(root.httpConfig)
+      root.httpConfig = ""
+      stdinEnabled = false
+    }
+    onExited: stdinEnabled = true
+    onRunningChanged: if (!running) {
+      stdinEnabled = true
+      root.httpConfig = ""
     }
   }
 
@@ -372,7 +430,11 @@ Item {
     }
   }
 
-  Component.onCompleted: mkdirProc.running = true
+  Component.onCompleted: {
+    mkdirProc.running = true
+    root.rereadCatalog()
+    root.rereadState()
+  }
 
   PanelWindow {
     id: panel
