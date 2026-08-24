@@ -53,7 +53,7 @@ omarchy-shell shell summon 920four.devlinkspad '{"q":"apple team id"}'
 omarchy plugin remove 920four.devlinkspad
 ```
 
-That disables the plugin and deletes the git checkout. It does not edit Hyprland binds or touch other Omarchy config. Optional leftover: `~/.local/state/omarchy/devlinkspad.json` (device pairing + free-jump count, directory mode `700` / file mode `600`). Delete that file if you want a clean slate.
+That disables the plugin and deletes the git checkout. It does not edit Hyprland binds or touch other Omarchy config. Optional leftover: `~/.local/state/omarchy/devlinkspad.json` (device pairing + free-jump count). The plugin creates `~/.local/state/omarchy` as a real `0700` directory (refuses a symlink) and writes the state file with an atomic no-follow `0600` replace — the bearer token is never created under the ambient umask. Delete that file if you want a clean slate.
 
 If you added the Super+Shift+L bind yourself, remove it from `~/.config/hypr/bindings.lua`.
 
@@ -65,6 +65,7 @@ No sudo, no install hooks, no extra packages.
 | --- | --- |
 | `xdg-open` | Open dashboard URLs and the sign-in page in your default browser |
 | `curl` | Optional Pro license check against `https://devlinkspad.com`. The bearer token is passed through curl’s stdin config (`-K -`), not process argv. Responses are capped at 8 KiB. |
+| `python3` | Atomic owner-only write of `devlinkspad.json` (`O_NOFOLLOW`, mode `0600` from the first create) |
 | `openssl` | Random device id for pairing (falls back if missing) |
 
 The catalog ships in `data/services.json`. Network is used only for Pro pairing / license refresh, not for search. License HTTP bodies are capped at 8 KiB; the persisted state file and catalog are read with `head -c` so a replaced file cannot grow the keep-loaded overlay without a byte ceiling.
@@ -77,6 +78,7 @@ The catalog ships in `data/services.json`. Network is used only for Pro pairing 
 | `Overlay.qml` | Fullscreen palette |
 | `Search.js` | Local catalog scoring |
 | `License.js` | Free-jump counter + Pro pairing state |
+| `save-state.py` | Owner-only, no-follow atomic write of the license state file |
 | `data/services.json` | Bundled deep links |
 
 Not affiliated with Apple, Stripe, Vercel, or Expo. Dashboard URLs belong to those products.

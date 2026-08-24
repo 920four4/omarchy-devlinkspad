@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "920four.devlinkspad",
   "name": "devlinkspad",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "author": "920four",
   "license": "MIT",
   "description": "Command palette for Stripe, Vercel, Apple Team ID, and 140+ developer dashboard pages.",

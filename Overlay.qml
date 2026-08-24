@@ -40,6 +40,14 @@ Item {
   readonly property int stateMaxBytes: License.maxStateBytes()
   readonly property int catalogMaxBytes: License.maxCatalogBytes()
   property string httpConfig: ""
+  property string statePayload: ""
+  property bool stateDirty: false
+  readonly property string pluginRoot: {
+    var dir = (root.manifest && root.manifest.__sourceDir)
+      ? String(root.manifest.__sourceDir)
+      : (Quickshell.env("HOME") + "/.config/omarchy/plugins/920four.devlinkspad")
+    return dir.replace(/\/$/, "")
+  }
 
   property color background: Color.menu.background
   property color foreground: Color.menu.text
@@ -58,14 +66,7 @@ Item {
   property int cardHeight: Math.min(Style.space(520), panel.height - Style.gapsOut * 2)
   property int rowHeight: Math.max(Style.space(52), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
 
-  // FileView needs a filesystem path. Qt.resolvedUrl() returns a URL object
-  // here; calling string methods on it throws and leaves the catalog empty.
-  readonly property string catalogPath: {
-    var dir = (root.manifest && root.manifest.__sourceDir)
-      ? String(root.manifest.__sourceDir)
-      : (Quickshell.env("HOME") + "/.config/omarchy/plugins/920four.devlinkspad")
-    return dir.replace(/\/$/, "") + "/data/services.json"
-  }
+  readonly property string catalogPath: root.pluginRoot + "/data/services.json"
 
   function open(payloadJson) {
     var q = ""
@@ -135,13 +136,12 @@ Item {
     root.rebuildDisplay()
   }
 
-  function lockStatePerms() {
-    lockPermsProc.exec([
-      "sh", "-c",
-      "mkdir -p -m 700 -- \"$1\" && chmod 700 -- \"$1\" && if [ -e \"$2\" ]; then chmod 600 -- \"$2\"; fi",
-      "devlinkspad-perms",
-      root.stateDir,
-      root.statePath
+  function prepareStateDir() {
+    dirPrepProc.exec([
+      "python3",
+      root.pluginRoot + "/save-state.py",
+      "--prepare-dir",
+      root.stateDir
     ])
   }
 
@@ -193,14 +193,28 @@ Item {
   }
 
   function saveState() {
-    stateFile.setText(License.serializeState({
+    var payload = License.serializeState({
       deviceId: root.deviceId,
       token: root.licenseToken,
       email: root.licenseEmail,
       isPro: root.isPro,
       opens: root.opens,
       checkedAt: root.checkedAt
-    }))
+    })
+    if (saveStateProc.running) {
+      root.statePayload = payload
+      root.stateDirty = true
+      return
+    }
+    root.statePayload = payload
+    root.stateDirty = false
+    saveStateProc.stdinEnabled = true
+    saveStateProc.exec([
+      "python3",
+      root.pluginRoot + "/save-state.py",
+      root.stateDir,
+      root.statePath
+    ])
   }
 
   function randomDeviceId() {
@@ -266,7 +280,14 @@ Item {
   }
 
   function rereadState() {
-    stateReadProc.exec(["timeout", "5", "head", "-c", String(root.stateMaxBytes + 1), "--", root.statePath])
+    // Refuse to read through a symlink; skip if the file does not exist yet.
+    stateReadProc.exec([
+      "sh", "-c",
+      'if [ -L "$2" ]; then echo "devlinkspad: refuse symlink state file" >&2; exit 1; fi; if [ ! -e "$2" ]; then exit 0; fi; if [ ! -f "$2" ]; then echo "devlinkspad: state path is not a regular file" >&2; exit 1; fi; timeout 5 head -c "$1" -- "$2"',
+      "devlinkspad-state-read",
+      String(root.stateMaxBytes + 1),
+      root.statePath
+    ])
   }
 
   function handleHttp(raw) {
@@ -333,10 +354,8 @@ Item {
     path: root.statePath
     preload: false
     watchChanges: true
-    atomicWrites: true
     printErrors: false
     onFileChanged: root.rereadState()
-    onSaved: root.lockStatePerms()
   }
 
   Process {
@@ -372,7 +391,25 @@ Item {
   }
 
   Process {
-    id: lockPermsProc
+    id: dirPrepProc
+  }
+
+  Process {
+    id: saveStateProc
+    stdinEnabled: true
+    onStarted: {
+      write(root.statePayload)
+      root.statePayload = ""
+      stdinEnabled = false
+    }
+    onExited: {
+      stdinEnabled = true
+      if (root.stateDirty) root.saveState()
+    }
+    onRunningChanged: if (!running) {
+      stdinEnabled = true
+      if (!root.stateDirty) root.statePayload = ""
+    }
   }
 
   Process {
@@ -442,7 +479,7 @@ Item {
   }
 
   Component.onCompleted: {
-    root.lockStatePerms()
+    root.prepareStateDir()
     root.rereadCatalog()
     root.rereadState()
   }
