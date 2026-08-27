@@ -34,7 +34,8 @@ Item {
   readonly property bool canJump: root.isPro || root.opens < root.freeOpens
   readonly property int remainingOpens: Math.max(0, root.freeOpens - root.opens)
   readonly property int ctaHeight: root.isPro ? 0 : Math.max(Style.space(28), Style.font.caption + Style.spacing.controlPaddingY * 2)
-  readonly property string stateDir: Quickshell.env("HOME") + "/.local/state/omarchy"
+  readonly property string homeDir: Quickshell.env("HOME")
+  readonly property string stateDir: root.homeDir + "/.local/state/omarchy"
   readonly property string statePath: root.stateDir + "/devlinkspad.json"
   readonly property int httpMaxBytes: License.maxHttpBytes()
   readonly property int stateMaxBytes: License.maxStateBytes()
@@ -140,8 +141,8 @@ Item {
     dirPrepProc.exec([
       "python3",
       root.pluginRoot + "/save-state.py",
-      "--prepare-dir",
-      root.stateDir
+      "--prepare",
+      root.homeDir
     ])
   }
 
@@ -212,8 +213,8 @@ Item {
     saveStateProc.exec([
       "python3",
       root.pluginRoot + "/save-state.py",
-      root.stateDir,
-      root.statePath
+      "--write",
+      root.homeDir
     ])
   }
 
@@ -280,13 +281,11 @@ Item {
   }
 
   function rereadState() {
-    // Refuse to read through a symlink; skip if the file does not exist yet.
     stateReadProc.exec([
-      "sh", "-c",
-      'if [ -L "$2" ]; then echo "devlinkspad: refuse symlink state file" >&2; exit 1; fi; if [ ! -e "$2" ]; then exit 0; fi; if [ ! -f "$2" ]; then echo "devlinkspad: state path is not a regular file" >&2; exit 1; fi; timeout 5 head -c "$1" -- "$2"',
-      "devlinkspad-state-read",
-      String(root.stateMaxBytes + 1),
-      root.statePath
+      "python3",
+      root.pluginRoot + "/save-state.py",
+      "--read",
+      root.homeDir
     ])
   }
 
@@ -378,15 +377,20 @@ Item {
   Process {
     id: stateReadProc
     stdout: StdioCollector {
+      id: stateReadOut
       waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text)
-        if (!License.withinByteCeiling(raw, root.stateMaxBytes)) {
-          console.warn("devlinkspad: state file exceeds byte ceiling")
-          return
-        }
-        root.applyState(License.parseState(raw))
+    }
+    onExited: function(code) {
+      if (code !== 0) {
+        console.warn("devlinkspad: state read refused")
+        return
       }
+      var raw = String(stateReadOut.text)
+      if (!License.withinByteCeiling(raw, root.stateMaxBytes)) {
+        console.warn("devlinkspad: state file exceeds byte ceiling")
+        return
+      }
+      root.applyState(License.parseState(raw))
     }
   }
 
