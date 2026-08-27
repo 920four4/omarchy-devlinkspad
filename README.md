@@ -65,10 +65,10 @@ No sudo, no install hooks, no extra packages.
 | --- | --- |
 | `xdg-open` | Open dashboard URLs and the sign-in page in your default browser |
 | `curl` | Optional Pro license check against `https://devlinkspad.com`. The bearer token is passed through curl’s stdin config (`-K -`), not process argv. Responses are capped at 8 KiB. |
-| `python3` | Pin `~/.local/state/omarchy` and read/write `devlinkspad.json` through that directory fd (`O_NOFOLLOW`, `O_NONBLOCK`, mode `0600` from the first create) |
+| `python3` | Pin `~/.local/state/omarchy` and `data/` with a directory fd; read/write through that fd (`O_NOFOLLOW`, `O_NONBLOCK`, mode `0600` from the first create) |
 | `openssl` | Random device id for pairing (falls back if missing) |
 
-The catalog ships in `data/services.json`. Network is used only for Pro pairing / license refresh, not for search. License HTTP bodies are capped at 8 KiB. The catalog is read with `head -c`. The persisted state file is read through the pinned directory fd with a byte ceiling, so a replaced file cannot grow the keep-loaded overlay.
+The catalog ships in `data/services.json`. Network is used only for Pro pairing / license refresh, not for search. License HTTP bodies are capped at 8 KiB. The catalog and persisted state file are both read through a pinned directory fd (`O_NOFOLLOW|O_NONBLOCK`) with a byte ceiling, so a replaced file or FIFO cannot grow or stall the keep-loaded overlay. `xdg-open` only receives `https://` URLs.
 
 ## Files
 
@@ -78,7 +78,7 @@ The catalog ships in `data/services.json`. Network is used only for Pro pairing 
 | `Overlay.qml` | Fullscreen palette |
 | `Search.js` | Local catalog scoring |
 | `License.js` | Free-jump counter + Pro pairing state |
-| `save-state.py` | Walk + pin `omarchy` dirfd; owner-only no-follow read/write of the license state file |
+| `save-state.py` | Walk + pin dirfds; owner-only no-follow I/O for the license state file and catalog |
 | `data/services.json` | Bundled deep links |
 
 Not affiliated with Apple, Stripe, Vercel, or Expo. Dashboard URLs belong to those products.

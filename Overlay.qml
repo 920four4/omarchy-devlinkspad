@@ -20,7 +20,6 @@ Item {
   property bool cursorActive: false
   property var services: []
 
-  property string siteUrl: "https://devlinkspad.com"
   property int freeOpens: 20
   property string deviceId: ""
   property string licenseToken: ""
@@ -35,8 +34,6 @@ Item {
   readonly property int remainingOpens: Math.max(0, root.freeOpens - root.opens)
   readonly property int ctaHeight: root.isPro ? 0 : Math.max(Style.space(28), Style.font.caption + Style.spacing.controlPaddingY * 2)
   readonly property string homeDir: Quickshell.env("HOME")
-  readonly property string stateDir: root.homeDir + "/.local/state/omarchy"
-  readonly property string statePath: root.stateDir + "/devlinkspad.json"
   readonly property int httpMaxBytes: License.maxHttpBytes()
   readonly property int stateMaxBytes: License.maxStateBytes()
   readonly property int catalogMaxBytes: License.maxCatalogBytes()
@@ -67,8 +64,6 @@ Item {
   property int cardHeight: Math.min(Style.space(520), panel.height - Style.gapsOut * 2)
   property int rowHeight: Math.max(Style.space(52), Style.font.body + Style.font.caption + Style.spacing.rowPaddingX * 2)
 
-  readonly property string catalogPath: root.pluginRoot + "/data/services.json"
-
   function open(payloadJson) {
     var q = ""
     try {
@@ -81,6 +76,8 @@ Item {
     root.filterText = q
     root.selectedIndex = 0
     root.cursorActive = true
+    root.rereadCatalog()
+    root.rereadState()
     root.rebuildDisplay()
     root.refreshLicense()
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
@@ -110,10 +107,12 @@ Item {
     var rows = Search.searchCatalog(root.services, root.filterText, 40)
     displayModel.clear()
     for (var i = 0; i < rows.length; i++) {
+      var href = License.safeHttpsUrl(rows[i].url)
+      if (!href) continue
       displayModel.append({
         title: Search.plain(rows[i].title, 120),
-        subtitle: Search.plain(rows[i].subtitle, 256),
-        href: Search.plain(rows[i].url, 256),
+        subtitle: Search.plain(href, 256),
+        href: href,
         serviceName: Search.plain(rows[i].serviceName, 80),
         label: Search.plain(rows[i].label, 80)
       })
@@ -179,18 +178,25 @@ Item {
   }
 
   function openUrl(url) {
-    if (!url) return
+    var href = License.safeHttpsUrl(url)
+    if (!href) return
     root.dismiss()
-    Quickshell.execDetached(["xdg-open", url])
+    Quickshell.execDetached(["xdg-open", href])
   }
 
   function applyState(s) {
-    root.deviceId = License.clip(s.deviceId, 64)
-    root.licenseToken = License.clip(s.token, 4096)
-    root.licenseEmail = License.clip(s.email, 254)
+    root.deviceId = License.clipDeviceId(s.deviceId)
+    root.licenseToken = License.clipToken(s.token)
+    root.licenseEmail = License.clipEmail(s.email)
     root.isPro = s.isPro === true
-    root.opens = s.opens || 0
+    root.opens = License.clipOpens(s.opens)
     root.checkedAt = s.checkedAt || 0
+  }
+
+  function openConnectPage() {
+    var href = License.connectPage(root.deviceId)
+    if (!href) return
+    Quickshell.execDetached(["xdg-open", href])
   }
 
   function saveState() {
@@ -227,32 +233,33 @@ Item {
   }
 
   function ensureDeviceId() {
-    if (root.deviceId && root.deviceId.length >= 24) return
+    if (License.isDeviceId(root.deviceId)) return
+    if (randProc.running) return
     root.pendingConnect = true
-    randProc.running = true
+    randProc.exec(["sh", "-c", "openssl rand -hex 20 | head -c 41", "devlinkspad-rand"])
   }
 
   function startConnect() {
-    if (!root.deviceId || root.deviceId.length < 24) {
+    if (!License.isDeviceId(root.deviceId)) {
       root.ensureDeviceId()
       return
     }
     root.connecting = true
     pollTimer.restart()
     pollDeadline.restart()
-    root.httpJson("start", "POST", root.siteUrl + "/api/omarchy/device/start",
+    root.httpJson("start", "POST", License.startEndpoint(),
                   JSON.stringify({ deviceId: root.deviceId }), "")
   }
 
   function refreshLicense() {
     if (!root.licenseToken) return
-    root.httpJson("license", "GET", root.siteUrl + "/api/omarchy/license", "", root.licenseToken)
+    root.httpJson("license", "GET", License.licenseEndpoint(), "", root.licenseToken)
   }
 
   function pollStatus() {
-    if (!root.deviceId) return
-    root.httpJson("poll", "GET",
-                  root.siteUrl + "/api/omarchy/device/status?device=" + root.deviceId, "", "")
+    var url = License.pollEndpoint(root.deviceId)
+    if (!url) return
+    root.httpJson("poll", "GET", url, "", "")
   }
 
   function httpJson(action, method, url, body, token) {
@@ -277,7 +284,12 @@ Item {
   }
 
   function rereadCatalog() {
-    catalogReadProc.exec(["timeout", "5", "head", "-c", String(root.catalogMaxBytes + 1), "--", root.catalogPath])
+    catalogReadProc.exec([
+      "python3",
+      root.pluginRoot + "/save-state.py",
+      "--read-catalog",
+      root.pluginRoot
+    ])
   }
 
   function rereadState() {
@@ -294,8 +306,7 @@ Item {
     root.httpAction = ""
     var data = License.parseJson(raw)
     if (!data) {
-      if (action === "start" && root.deviceId)
-        Quickshell.execDetached(["xdg-open", root.siteUrl + "/connect/omarchy?device=" + root.deviceId])
+      if (action === "start") root.openConnectPage()
       return
     }
 
@@ -306,15 +317,15 @@ Item {
         root.startConnect()
         return
       }
-      Quickshell.execDetached(["xdg-open", root.siteUrl + "/connect/omarchy?device=" + root.deviceId])
+      root.openConnectPage()
       return
     }
 
     if (action === "poll") {
       if (data.status !== "claimed") return
-      if (data.token) root.licenseToken = License.clip(String(data.token), 4096)
+      if (data.token) root.licenseToken = License.clipToken(String(data.token))
       root.isPro = data.isPro === true
-      if (data.email) root.licenseEmail = License.clip(String(data.email), 254)
+      if (data.email) root.licenseEmail = License.clipEmail(data.email)
       root.checkedAt = Date.now()
       root.connecting = false
       pollTimer.stop()
@@ -325,7 +336,7 @@ Item {
 
     if (action === "license") {
       root.isPro = data.isPro === true
-      if (data.email) root.licenseEmail = License.clip(String(data.email), 254)
+      if (data.email) root.licenseEmail = License.clipEmail(data.email)
       root.checkedAt = Date.now()
       root.saveState()
     }
@@ -340,37 +351,27 @@ Item {
 
   ListModel { id: displayModel }
 
-  FileView {
-    path: root.catalogPath
-    preload: false
-    watchChanges: true
-    printErrors: false
-    onFileChanged: root.rereadCatalog()
-  }
-
-  FileView {
-    id: stateFile
-    path: root.statePath
-    preload: false
-    watchChanges: true
-    printErrors: false
-    onFileChanged: root.rereadState()
-  }
-
   Process {
     id: catalogReadProc
     stdout: StdioCollector {
+      id: catalogReadOut
       waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text)
-        if (!raw || !License.withinByteCeiling(raw, root.catalogMaxBytes)) {
-          console.warn("devlinkspad: catalog read failed or exceeds byte ceiling, path=" + root.catalogPath)
-          if (root.services.length === 0)
-            root.loadCatalog("[]")
-          return
-        }
-        root.loadCatalog(raw)
+    }
+    onExited: function(code) {
+      if (code !== 0) {
+        console.warn("devlinkspad: catalog read refused")
+        if (root.services.length === 0)
+          root.loadCatalog("[]")
+        return
       }
+      var raw = String(catalogReadOut.text)
+      if (!raw || !License.withinByteCeiling(raw, root.catalogMaxBytes)) {
+        console.warn("devlinkspad: catalog read failed or exceeds byte ceiling")
+        if (root.services.length === 0)
+          root.loadCatalog("[]")
+        return
+      }
+      root.loadCatalog(raw)
     }
   }
 
@@ -418,23 +419,14 @@ Item {
 
   Process {
     id: randProc
-    command: ["openssl", "rand", "-hex", "20"]
     stdout: StdioCollector {
+      id: randOut
       waitForEnd: true
-      onStreamFinished: {
-        var id = String(text).trim()
-        if (id.length < 24) return
-        root.deviceId = id
-        root.saveState()
-        if (root.pendingConnect) {
-          root.pendingConnect = false
-          root.startConnect()
-        }
-      }
     }
     onExited: function(code) {
-      if (root.deviceId && root.deviceId.length >= 24) return
-      root.deviceId = root.randomDeviceId()
+      var id = License.clipDeviceId(String(randOut.text).trim())
+      if (!id) id = root.randomDeviceId()
+      root.deviceId = id
       root.saveState()
       if (root.pendingConnect) {
         root.pendingConnect = false

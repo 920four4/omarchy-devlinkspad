@@ -44,9 +44,11 @@ function parseCatalog(raw) {
       for (var li = 0; li < ln; li++) {
         var link = linksIn[li]
         if (!link || typeof link !== "object") continue
+        var url = plain(link.url, MAX_FIELD)
+        if (url.indexOf("https://") !== 0) continue
         links.push({
           label: plain(link.label, 80),
-          url: plain(link.url, MAX_FIELD),
+          url: url,
           category: plain(link.category, 32)
         })
       }

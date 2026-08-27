@@ -30,10 +30,13 @@ import stat
 import sys
 
 MAX_BYTES = 8192
+MAX_CATALOG_BYTES = 262144
 DIR_MODE = 0o700
 FILE_MODE = 0o600
 STATE_NAME = "devlinkspad.json"
 STATE_PARTS = (".local", "state", "omarchy")
+CATALOG_DIR = "data"
+CATALOG_NAME = "services.json"
 TEMP_PREFIX = ".devlinkspad."
 TEMP_TRIES = 8
 
@@ -164,14 +167,20 @@ def _drop_nonblock(fd: int) -> None:
     fcntl.fcntl(fd, fcntl.F_SETFL, flags & ~os.O_NONBLOCK)
 
 
-def read_state(dirfd: int) -> bytes:
-    """Read STATE_NAME through dirfd. Missing file returns b''.
+def _valid_name(name: str) -> bool:
+    return bool(name) and "/" not in name and name not in (".", "..")
+
+
+def read_regular(dirfd: int, name: str, max_bytes: int) -> bytes:
+    """Read `name` through dirfd. Missing file returns b''.
 
     Open is the trust decision: O_NOFOLLOW|O_NONBLOCK, then fstat the same fd.
     """
+    if not _valid_name(name):
+        raise Refuse("invalid file name")
     try:
         fd = os.open(
-            STATE_NAME,
+            name,
             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
             dir_fd=dirfd,
         )
@@ -180,28 +189,57 @@ def read_state(dirfd: int) -> bytes:
     except OSError as exc:
         if exc.errno == errno.ENOENT:
             return b""
-        raise Refuse("cannot open state file: %s" % exc) from exc
+        raise Refuse("cannot open %s: %s" % (name, exc)) from exc
 
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
-            raise Refuse("state file is not a regular file")
+            raise Refuse("%s is not a regular file" % name)
         if st.st_uid != os.getuid():
-            raise Refuse("state file not owned by current user")
-        if st.st_size > MAX_BYTES:
-            raise Refuse("state file exceeds byte ceiling")
+            raise Refuse("%s not owned by current user" % name)
+        if st.st_size > max_bytes:
+            raise Refuse("%s exceeds byte ceiling" % name)
         _drop_nonblock(fd)
         data = bytearray()
-        while len(data) <= MAX_BYTES:
-            chunk = os.read(fd, min(4096, MAX_BYTES + 1 - len(data)))
+        while len(data) <= max_bytes:
+            chunk = os.read(fd, min(4096, max_bytes + 1 - len(data)))
             if not chunk:
                 break
             data.extend(chunk)
-            if len(data) > MAX_BYTES:
-                raise Refuse("state file exceeds byte ceiling")
+            if len(data) > max_bytes:
+                raise Refuse("%s exceeds byte ceiling" % name)
         return bytes(data)
     finally:
         _close(fd)
+
+
+def read_state(dirfd: int) -> bytes:
+    return read_regular(dirfd, STATE_NAME, MAX_BYTES)
+
+
+def pin_plugin_data_dir(plugin_root: str) -> int:
+    """Open plugin_root/data with O_NOFOLLOW at each step. Caller owns the fd."""
+    if not plugin_root or plugin_root.startswith("-") or "\x00" in plugin_root:
+        raise Refuse("invalid plugin root")
+    if not os.path.isabs(plugin_root):
+        raise Refuse("plugin root must be absolute")
+    try:
+        dirfd = os.open(
+            plugin_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        raise Refuse("cannot open plugin root: %s" % exc) from exc
+    try:
+        _check_dirfd(dirfd, "plugin root", tighten=False)
+        nextfd = _openat_dir(dirfd, CATALOG_DIR)
+        _close(dirfd)
+        dirfd = nextfd
+        _check_dirfd(dirfd, CATALOG_DIR, tighten=False)
+        return dirfd
+    except Exception:
+        _close(dirfd)
+        raise
 
 
 def _create_temp(dirfd: int) -> tuple[int, str]:
@@ -260,21 +298,6 @@ def write_state(dirfd: int, data: bytes) -> None:
             except OSError:
                 pass
 
-    chk = os.open(
-        STATE_NAME,
-        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-        dir_fd=dirfd,
-    )
-    try:
-        st = os.fstat(chk)
-        if not stat.S_ISREG(st.st_mode):
-            raise Refuse("state file is not a regular file")
-        if st.st_uid != os.getuid():
-            raise Refuse("state file not owned by current user")
-        os.fchmod(chk, FILE_MODE)
-    finally:
-        _close(chk)
-
 
 def _cli_prepare(home: str) -> None:
     dirfd = pin_state_dir(home, create=True)
@@ -305,27 +328,43 @@ def _cli_write(home: str) -> None:
         _close(dirfd)
 
 
+def _cli_read_catalog(plugin_root: str) -> None:
+    try:
+        dirfd = pin_plugin_data_dir(plugin_root)
+    except Missing:
+        return
+    try:
+        data = read_regular(dirfd, CATALOG_NAME, MAX_CATALOG_BYTES)
+    finally:
+        _close(dirfd)
+    if data:
+        sys.stdout.buffer.write(data)
+
+
 def main() -> None:
     if len(sys.argv) != 3:
-        fail("usage: save-state.py --prepare|--read|--write HOME")
-    action, home = sys.argv[1], sys.argv[2]
+        fail("usage: save-state.py --prepare|--read|--write|--read-catalog PATH")
+    action, path = sys.argv[1], sys.argv[2]
     try:
         if action == "--prepare":
-            _cli_prepare(home)
+            _cli_prepare(path)
             return
         if action == "--read":
-            _cli_read(home)
+            _cli_read(path)
             return
         if action == "--write":
-            _cli_write(home)
+            _cli_write(path)
+            return
+        if action == "--read-catalog":
+            _cli_read_catalog(path)
             return
     except Missing:
-        if action == "--read":
+        if action in ("--read", "--read-catalog"):
             return
         fail("state path is missing")
     except Refuse as exc:
         fail(str(exc))
-    fail("usage: save-state.py --prepare|--read|--write HOME")
+    fail("usage: save-state.py --prepare|--read|--write|--read-catalog PATH")
 
 
 if __name__ == "__main__":

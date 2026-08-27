@@ -144,8 +144,66 @@ class SaveStateTests(unittest.TestCase):
         text = OVERLAY.read_text()
         self.assertNotIn('[ -L "', text)
         self.assertNotIn("head -c \"$1\" -- \"$2\"", text)
+        self.assertNotIn("FileView", text)
+        self.assertNotIn('timeout", "5", "head"', text)
         self.assertIn('--read', text)
         self.assertIn('--write', text)
+        self.assertIn('--read-catalog', text)
+        self.assertIn("openssl rand -hex 20 | head -c 41", text)
+
+    def _plugin_root(self) -> Path:
+        root = Path(self.home) / "plugin"
+        (root / "data").mkdir(parents=True)
+        return root
+
+    def test_catalog_roundtrip(self) -> None:
+        root = self._plugin_root()
+        payload = b'[{"name":"Stripe","links":[{"url":"https://dashboard.stripe.com"}]}]'
+        (root / "data" / "services.json").write_bytes(payload)
+        rd = subprocess.run(
+            [sys.executable, str(SCRIPT), "--read-catalog", str(root)],
+            capture_output=True,
+            timeout=2,
+        )
+        self.assertEqual(rd.returncode, 0, rd.stderr.decode())
+        self.assertEqual(rd.stdout, payload)
+
+    def test_catalog_fifo_does_not_block(self) -> None:
+        root = self._plugin_root()
+        os.mkfifo(root / "data" / "services.json")
+        t0 = time.monotonic()
+        rd = subprocess.run(
+            [sys.executable, str(SCRIPT), "--read-catalog", str(root)],
+            capture_output=True,
+            timeout=2,
+        )
+        self.assertLess(time.monotonic() - t0, 1.0)
+        self.assertNotEqual(rd.returncode, 0)
+        self.assertEqual(rd.stdout, b"")
+
+    def test_catalog_symlink_refused(self) -> None:
+        root = self._plugin_root()
+        evil = Path(self.home) / "evil.json"
+        evil.write_bytes(b'[{"name":"x"}]')
+        os.symlink(evil, root / "data" / "services.json")
+        rd = subprocess.run(
+            [sys.executable, str(SCRIPT), "--read-catalog", str(root)],
+            capture_output=True,
+            timeout=2,
+        )
+        self.assertNotEqual(rd.returncode, 0)
+        self.assertEqual(rd.stdout, b"")
+
+    def test_catalog_oversized_refused(self) -> None:
+        root = self._plugin_root()
+        (root / "data" / "services.json").write_bytes(b"[" + b"x" * (ss.MAX_CATALOG_BYTES) + b"]")
+        rd = subprocess.run(
+            [sys.executable, str(SCRIPT), "--read-catalog", str(root)],
+            capture_output=True,
+            timeout=2,
+        )
+        self.assertNotEqual(rd.returncode, 0)
+        self.assertEqual(rd.stdout, b"")
 
 
 if __name__ == "__main__":
